@@ -76,16 +76,12 @@ def plot_loss(losses, run_name, title):
 batch_size = 128
 # shape: num_batches, batch_size, channels, height, width
 
-# center pos layer 2: 13,13
-# center pos layer 4: 3,3
-cenl2 = 13
-cenl4 = 3
+# trying all pos from first channel
+act2_data = rearrange(act_2conv1, 'n b c h w -> (n b) c (h w)')
+act2_data = act2_data[:, 0, :]
 
-act2_data = act_2conv1[:, :, :, cenl2, cenl2]
-act2_data = rearrange(act2_data, 'n b c -> (n b) c')
-
-act4_data = act_4conv2[:, :, :, cenl4, cenl4]
-act4_data = rearrange(act4_data, 'n b c -> (n b) c')
+act4_data = rearrange(act_4conv2, 'n b c h w -> (n b) c (h w)')
+act4_data = act4_data[:, 0, :]
 
 act4_dataset = ConvActDataset(act4_data)
 act2_dataset = ConvActDataset(act2_data)
@@ -94,13 +90,13 @@ act2_dl = torch.utils.data.DataLoader(act2_dataset, batch_size=batch_size, shuff
 
 # train sae with acts from resnet hooks
 act_dl = act4_dl
-run_name = 'act4cen'
+run_name = 'act4all'
 d_act = next(iter(act_dl)).shape[-1]
-d_feat = 700
+d_feat = 1000
 model = SAE(d_act, d_feat)
 model = model.to(device)
 lam = 5
-epochs = 1
+epochs = 50
 optimizer = torch.optim.AdamW(model.parameters(), betas=(0.9, 0.999), lr=5e-5)
 lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[50])
 
@@ -110,13 +106,13 @@ plot_loss(losses, run_name, title)
 
 # train sae with acts from resnet hooks
 act_dl = act2_dl
-run_name = 'act2cen'
+run_name = 'act2all'
 d_act = next(iter(act_dl)).shape[-1]
-d_feat = 700
+d_feat = 1000
 model = SAE(d_act, d_feat)
 model = model.to(device)
 lam = 5
-epochs = 1
+epochs = 50
 optimizer = torch.optim.AdamW(model.parameters(), betas=(0.9, 0.999), lr=5e-5)
 lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[50])
 
