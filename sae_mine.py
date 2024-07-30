@@ -17,11 +17,11 @@ parser.add_argument('--num_feats', type=int, default=700, help='num features in 
 parser.add_argument('--epochs', type=int, default=10, help='num of epochs')
 parser.add_argument('--run_name', type=str, default='', help='run name')
 parser.add_argument('--type', type=str, default='cen', help='cen or all')
-parser.add_argument('--layer', type=int, default=2, help='2 or 4')
+parser.add_argument('--layer', type=int, default=2, help='1,2, or 4')
 args = parser.parse_args()
 
-# for cen neuron, all channels, act2 has 128, act4 has 512, 700 feats
-# for all neuron in 1 channel, act2 has 784, act4 has 49, 1000 feats
+# for cen neuron, all channels, act2 has 128, act4 has 512, act1 has 64
+# for all neuron in 1 channel, act2 has 784, act4 has 49, act1 has 3,136
 
 # params
 path = args.path
@@ -35,8 +35,10 @@ epochs = args.epochs
 x_dim=image_size*image_size*3
 y_dim=1
 run_name = args.run_name
-type = args.type
-layer = args.layer
+# a dict storing some of the params
+# config = {'batch_size': batch_size, 'image_size': image_size, 'num_feats': num_feats, 
+# 'epochs': epochs, 'run_name': run_name, 'type': type, 'layer': layer}
+config = {'type': args.type, 'layer': args.layer}
 
 class ImageNetwork(nn.Module):
     def __init__(self, x_dim, y_dim):
@@ -92,22 +94,9 @@ class SAE(nn.Module):
 # load data
 images_flat = np.load(f'{datadir}images_flat_mine_all.npy')
 images_flat = rearrange(images_flat, 'n b c -> (n b) c')
-if type == 'cen':
-    if layer == 2:
-        feat2cen = np.load(f'{datadir}feats_act2cen_all.npy')
-        feat2cen = rearrange(feat2cen, 'n b c -> (n b) c')
-    elif layer == 4:
-        feat4cen = np.load(f'{datadir}feats_act4cen_all.npy')
-        feat4cen = rearrange(feat4cen, 'n b c -> (n b) c')
-    print('loaded cen')
-else:
-    if layer == 2:
-        feat2all = np.load(f'{datadir}feats_act2all_all.npy')
-        feat2all = rearrange(feat2all, 'n b c -> (n b) c')
-    elif layer == 4:
-        feat4all = np.load(f'{datadir}feats_act4all_all.npy')
-        feat4all = rearrange(feat4all, 'n b c -> (n b) c')
-    print('loaded all')
+feats = np.load(f'{datadir}feats_act{config['layer']}{config['type']}.npy')
+feats = rearrange(feats, 'n b c -> (n b) c')
+print(f"loaded {config['layer']}{config['type']}")
 
 def train_mine(run_name, lam, img_train, act_train, epochs, batch_size, img_val, act_val):
     model = mine.Mine(
@@ -154,19 +143,5 @@ def mine_feats(num_feats, images_flat, feats, run_name, lam, epochs, batch_size)
 
 
 lam = 0.005
-if type == 'cen':
-    # num_feats = 700
-    if layer == 2:
-        run = f'{run_name}_act2cen'
-        mine_feats(num_feats, images_flat, feat2cen, run, lam, epochs, batch_size)
-    elif layer == 4:
-        run = f'{run_name}_act4cen'
-        mine_feats(num_feats, images_flat, feat4cen, run, lam, epochs, batch_size)
-else:
-    # num_feats = 1000
-    if layer == 2:
-        run = f'{run_name}_act2all'
-        mine_feats(num_feats, images_flat, feat2all, run, lam, epochs, batch_size)
-    elif layer == 4:
-        run = f'{run_name}_act4all'
-        mine_feats(num_feats, images_flat, feat4all, run, lam, epochs, batch_size)
+run = f'{run_name}_act{config["layer"]}{config["type"]}'
+mine_feats(num_feats, images_flat, feats, run, lam, epochs, batch_size)

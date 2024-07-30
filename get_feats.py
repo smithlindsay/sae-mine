@@ -17,7 +17,7 @@ transform = transforms.Compose([
 ])
 
 testdata = torchvision.datasets.ImageNet(root="/scratch/gpfs/DATASETS/imagenet/ilsvrc_2012_classification_localization",
-                                          split="val", transform=transform)
+                                          split="train", transform=transform)
 batch_size = 512
 testloader = torch.utils.data.DataLoader(testdata, batch_size=batch_size,
                                           shuffle=True, num_workers=8, pin_memory=True)
@@ -49,11 +49,13 @@ def get_activation(name):
         activation[name] = output.detach().cpu().numpy()
     return hook
 
+hookl1 = resnet.layer1[0].conv1.register_forward_hook(get_activation('1conv1'))
 hookl2 = resnet.layer2[0].conv1.register_forward_hook(get_activation('2conv1'))
 hookl4 = resnet.layer4[1].conv2.register_forward_hook(get_activation('4conv2'))
 
 inputs_list = []
 # outputs_list = []
+act_listl1 = []
 act_listl2 = []
 act_listl4 = []
 resnet.eval()
@@ -66,6 +68,7 @@ for inputs, _ in tqdm(testloader):
         output = resnet(inputs)
         
         # collect the activations
+        act_listl1.append(activation['1conv1'])
         act_listl2.append(activation['2conv1'])
         act_listl4.append(activation['4conv2'])
         inputs = torch.flatten(inputs, start_dim=1)
@@ -76,24 +79,30 @@ for inputs, _ in tqdm(testloader):
     del output
 
 # detach the hooks
+hookl1.remove()
 hookl2.remove()
 hookl4.remove()
 
+act_listl1 = np.array(act_listl1[:-1])
 act_listl2 = np.array(act_listl2[:-1])
 act_listl4 = np.array(act_listl4[:-1])
 inputs_list = np.array(inputs_list[:-1])
 
-act_listl2.shape, act_listl4.shape, inputs_list.shape
+act_listl1.shape, act_listl2.shape, act_listl4.shape, inputs_list.shape
 
 np.save('images_flat_mine_all.npy', inputs_list)
-np.save('act_4conv2_mine_all.npy', act_listl4)
+np.save('act_1conv1_mine_all.npy', act_listl1)
 np.save('act_2conv1_mine_all.npy', act_listl2)
+np.save('act_4conv2_mine_all.npy', act_listl4)
 
+act_1conv1 = torch.from_numpy(act_listl1)
+del act_listl1
 act_2conv1 = torch.from_numpy(act_listl2)
+del act_listl2
 act_4conv2 = torch.from_numpy(act_listl4)
+del act_listl4
 images_flat = inputs_list
-
-del act_listl2, act_listl4, inputs_list
+del inputs_list
 
 class ConvActDataset(torch.utils.data.Dataset):
     def __init__(self, data):
@@ -105,8 +114,12 @@ class ConvActDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         return self.data[idx]
 
+cenl1 = (56-1)//2
 cenl2 = 13
 cenl4 = 3
+
+act1_data = act_1conv1[:, :, :, cenl1, cenl1]
+act1_data = rearrange(act1_data, 'n b c -> (n b) c')
 
 act2_data = act_2conv1[:, :, :, cenl2, cenl2]
 act2_data = rearrange(act2_data, 'n b c -> (n b) c')
@@ -114,10 +127,12 @@ act2_data = rearrange(act2_data, 'n b c -> (n b) c')
 act4_data = act_4conv2[:, :, :, cenl4, cenl4]
 act4_data = rearrange(act4_data, 'n b c -> (n b) c')
 
-act4_dataset = ConvActDataset(act4_data)
+act1_dataset = ConvActDataset(act1_data)
 act2_dataset = ConvActDataset(act2_data)
-act4_dl = torch.utils.data.DataLoader(act4_dataset, batch_size=batch_size, shuffle=False, num_workers=8, pin_memory=True)
+act4_dataset = ConvActDataset(act4_data)
+act1_dl = torch.utils.data.DataLoader(act1_dataset, batch_size=batch_size, shuffle=False, num_workers=8, pin_memory=True)
 act2_dl = torch.utils.data.DataLoader(act2_dataset, batch_size=batch_size, shuffle=False, num_workers=8, pin_memory=True)
+act4_dl = torch.utils.data.DataLoader(act4_dataset, batch_size=batch_size, shuffle=False, num_workers=8, pin_memory=True)
 
 def get_feats(act_dl, d_feat, run_name, model_name):
     d_act = next(iter(act_dl)).shape[-1]
