@@ -1,26 +1,26 @@
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torchvision
-from torchvision import transforms
 from tqdm.auto import tqdm
-import matplotlib.pyplot as plt
-from einops import rearrange
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+import h5py
+import numpy as np
+import argparse
 
-transform = transforms.Compose([
-    transforms.Resize(256),
-    transforms.CenterCrop(224),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-])
+parser = argparse.ArgumentParser(description="get feats from sae from resnet val acts")
 
-testdata = torchvision.datasets.ImageNet(root="/scratch/gpfs/DATASETS/imagenet/ilsvrc_2012_classification_localization",
-                                          split="train", transform=transform)
-batch_size = 512
-testloader = torch.utils.data.DataLoader(testdata, batch_size=batch_size,
-                                          shuffle=True, num_workers=8, pin_memory=True)
+parser.add_argument('--num_feats', type=int, default=700, help='num features in SAE')
+parser.add_argument('--type', type=str, default='cen', help='cen or all')
+parser.add_argument('--layer', type=int, default=2, help='1,2, or 4')
+parser.add_argument('--conv_num', type=int, default=1, help='1 or 2')
+parser.add_argument('--batch_size', type=int, default=512, help='batch size')
+args = parser.parse_args()
+
+num_feats = args.num_feats
+type = args.type
+layer = args.layer
+conv_num = args.conv_num
+batch_size = args.batch_size
+device = 'cuda'
 
 class SAE(nn.Module):
     def __init__(self, n, m):
@@ -34,107 +34,31 @@ class SAE(nn.Module):
         f = F.relu(self.enc(x))
         out = self.dec(f)
         return f, out
-    
-resnet = torch.hub.load('pytorch/vision:v0.10.0', 'resnet18', pretrained=True)
 
-resnet.to(device)
+class H5Dataset(torch.utils.data.Dataset):
+    def __init__(self, path, ds_name):
+        self.file_path = path
+        self.ds_name = ds_name
+        self.dataset = None
+        with h5py.File(self.file_path, 'r') as file:
+            self.dataset_len = len(file[f"{self.ds_name}"])
 
-# add hooks, run model with inputs to get activations
-
-# a dict to store the activations
-activation = {}
-def get_activation(name):
-    # the hook signature
-    def hook(model, input, output):
-        activation[name] = output.detach().cpu().numpy()
-    return hook
-
-hookl1 = resnet.layer1[0].conv1.register_forward_hook(get_activation('1conv1'))
-hookl2 = resnet.layer2[0].conv1.register_forward_hook(get_activation('2conv1'))
-hookl4 = resnet.layer4[1].conv2.register_forward_hook(get_activation('4conv2'))
-
-inputs_list = []
-# outputs_list = []
-act_listl1 = []
-act_listl2 = []
-act_listl4 = []
-resnet.eval()
-
-# pass images through resnet to get activations
-for inputs, _ in tqdm(testloader):
-    inputs = inputs.to(device)
-
-    with torch.no_grad():
-        output = resnet(inputs)
-        
-        # collect the activations
-        act_listl1.append(activation['1conv1'])
-        act_listl2.append(activation['2conv1'])
-        act_listl4.append(activation['4conv2'])
-        inputs = torch.flatten(inputs, start_dim=1)
-        inputs_list.append(inputs.detach().cpu().numpy())
-        # outputs_list.append(output.detach().cpu().numpy())
-
-    del inputs
-    del output
-
-# detach the hooks
-hookl1.remove()
-hookl2.remove()
-hookl4.remove()
-
-act_listl1 = np.array(act_listl1[:-1])
-act_listl2 = np.array(act_listl2[:-1])
-act_listl4 = np.array(act_listl4[:-1])
-inputs_list = np.array(inputs_list[:-1])
-
-act_listl1.shape, act_listl2.shape, act_listl4.shape, inputs_list.shape
-
-np.save('images_flat_mine_all.npy', inputs_list)
-np.save('act_1conv1_mine_all.npy', act_listl1)
-np.save('act_2conv1_mine_all.npy', act_listl2)
-np.save('act_4conv2_mine_all.npy', act_listl4)
-
-act_1conv1 = torch.from_numpy(act_listl1)
-del act_listl1
-act_2conv1 = torch.from_numpy(act_listl2)
-del act_listl2
-act_4conv2 = torch.from_numpy(act_listl4)
-del act_listl4
-images_flat = inputs_list
-del inputs_list
-
-class ConvActDataset(torch.utils.data.Dataset):
-    def __init__(self, data):
-        self.data = data
+    def __getitem__(self, index):
+        if self.dataset is None:
+            self.dataset = h5py.File(self.file_path, 'r')[f"{self.ds_name}"]
+        return self.dataset[index]
 
     def __len__(self):
-        return len(self.data)
+        return self.dataset_len
 
-    def __getitem__(self, idx):
-        return self.data[idx]
+def make_dl(layer, conv_num, type):
+    h5path = f"./data/act_{layer}conv{conv_num}_val.hdf5"
+    act_dataset = H5Dataset(h5path, type)
+    act_dl = torch.utils.data.DataLoader(act_dataset, batch_size=batch_size, shuffle=False, num_workers=8, pin_memory=True)
+    return act_dl
 
-cenl1 = (56-1)//2
-cenl2 = 13
-cenl4 = 3
-
-act1_data = act_1conv1[:, :, :, cenl1, cenl1]
-act1_data = rearrange(act1_data, 'n b c -> (n b) c')
-
-act2_data = act_2conv1[:, :, :, cenl2, cenl2]
-act2_data = rearrange(act2_data, 'n b c -> (n b) c')
-
-act4_data = act_4conv2[:, :, :, cenl4, cenl4]
-act4_data = rearrange(act4_data, 'n b c -> (n b) c')
-
-act1_dataset = ConvActDataset(act1_data)
-act2_dataset = ConvActDataset(act2_data)
-act4_dataset = ConvActDataset(act4_data)
-act1_dl = torch.utils.data.DataLoader(act1_dataset, batch_size=batch_size, shuffle=False, num_workers=8, pin_memory=True)
-act2_dl = torch.utils.data.DataLoader(act2_dataset, batch_size=batch_size, shuffle=False, num_workers=8, pin_memory=True)
-act4_dl = torch.utils.data.DataLoader(act4_dataset, batch_size=batch_size, shuffle=False, num_workers=8, pin_memory=True)
-
-def get_feats(act_dl, d_feat, run_name, model_name):
+def get_feats(layer, conv_num, type, d_feat, run_name, model_name):
+    act_dl = make_dl(layer, conv_num, type)
     d_act = next(iter(act_dl)).shape[-1]
     model = SAE(d_act, d_feat)
     model = torch.load(f'./models/{model_name}.pt')
@@ -151,20 +75,5 @@ def get_feats(act_dl, d_feat, run_name, model_name):
     np.save(f'./data/feats_{run_name}', np.array(allfeats))
     np.save(f'./data/recon_acts_{run_name}', np.array(allrecon_acts))
 
-get_feats(act4_dl, 700, 'act4cen_all', 'act4cen')
-get_feats(act2_dl, 700, 'act2cen_all', 'act2cen')
-
-# trying all pos from first channel
-act2_data = rearrange(act_2conv1, 'n b c h w -> (n b) c (h w)')
-act2_data = act2_data[:, 0, :]
-
-act4_data = rearrange(act_4conv2, 'n b c h w -> (n b) c (h w)')
-act4_data = act4_data[:, 0, :]
-
-act4_dataset = ConvActDataset(act4_data)
-act2_dataset = ConvActDataset(act2_data)
-act4_dl = torch.utils.data.DataLoader(act4_dataset, batch_size=batch_size, shuffle=False, num_workers=8, pin_memory=True)
-act2_dl = torch.utils.data.DataLoader(act2_dataset, batch_size=batch_size, shuffle=False, num_workers=8, pin_memory=True)
-
-get_feats(act4_dl, 1000, 'act4all_all', 'act4all')
-get_feats(act2_dl, 1000, 'act2all_all', 'act2all')
+run_name = f'act{layer}{type}'
+get_feats(layer, conv_num, type, num_feats, run_name, run_name)
